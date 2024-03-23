@@ -14,9 +14,12 @@ with read_base():
 
     from .models.xdan.xdan_hf_4x34b_0318 import moe4x34b_0318_hf
     from .models.xdan.xdan_vllm_4x34b_0318 import moe4x34b_0318_vllm
+    from .models.xdan.xdam_vllm_l1_agent_0322 import xdan_l1_agent_0322
 
 #datasets = [*gsm8k_datasets, *math_datasets, *ceval_datasets, *mmlu_datasets]
 datasets = [*gsm8k_datasets]
 
 
-models = [moe4x34b_0318_vllm]
+models = [xdan_l1_agent_0322]
+
+# models = [moe4x34b_0318_vllm]

@@ -1,6 +1,6 @@
 from opencompass.models import HuggingFaceCausalLM
 
-models = [
+xdan_l1_agent_0322 = [
     # xDAN-L1-Agent-0322-e2
     dict(
         type=HuggingFaceCausalLM,
