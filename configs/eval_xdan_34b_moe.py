@@ -18,8 +18,12 @@ with read_base():
 
 #datasets = [*gsm8k_datasets, *math_datasets, *ceval_datasets, *mmlu_datasets]
 datasets = [*gsm8k_datasets]
-
-
 models = [xdan_l1_agent_0322]
+
+work_dir = './outputs/xdan_l1_test/'
+
+# datasets = sum([v for k, v in locals().items() if k.endswith("_datasets")], [])
+# models = sum([v for k, v in locals().items() if k.endswith("_model")], [])
+
 
 # models = [moe4x34b_0318_vllm]
