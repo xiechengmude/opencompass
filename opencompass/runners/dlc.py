@@ -161,17 +161,23 @@ class DLCRunner(BaseRunner):
             shell_cmd += 'umask 0000; '
             shell_cmd += '{task_cmd}'
 
-            tmpl = ('dlc create job'
-                    f" --command '{shell_cmd}'"
-                    f' --name {task_name[:512]}'
-                    ' --kind BatchJob'
-                    f" -c {self.aliyun_cfg['dlc_config_path']}"
-                    f" --workspace_id {self.aliyun_cfg['workspace_id']}"
-                    ' --worker_count 1'
-                    f' --worker_cpu {max(num_gpus * 8, 12)}'
-                    f' --worker_gpu {num_gpus}'
-                    f' --worker_memory {max(num_gpus * 128, 192)}'
-                    f" --worker_image {self.aliyun_cfg['worker_image']}")
+            # set priority to 1 as default
+            task_priority = self.aliyun_cfg.get('priority', 1)
+
+            tmpl = (
+                'dlc submit pytorchjob'
+                f" --command '{shell_cmd}'"
+                f' --name {task_name[:512]}'
+                f" --config {self.aliyun_cfg['dlc_config_path']}"
+                f" --workspace_id {self.aliyun_cfg['workspace_id']}"
+                f" --resource_id {self.aliyun_cfg['resource_id']}"
+                f' --priority {task_priority}'
+                ' --workers 1'
+                f' --worker_cpu {max(num_gpus * 8, 12)}'
+                f' --worker_gpu {num_gpus}'
+                f' --worker_memory {max(num_gpus * 128, 192)}Gi'
+                f" --worker_image {self.aliyun_cfg['worker_image']}"
+                f" --data_sources {','.join(self.aliyun_cfg['data_sources'])}")
             get_cmd = partial(task.get_command,
                               cfg_path=param_file,
                               template=tmpl)
@@ -219,26 +225,25 @@ class DLCRunner(BaseRunner):
                 pri_time = None
                 initial_time = datetime.datetime.now()
 
-                url = 'http://pai-console.cb210e3f99cd7403f8de2a630dcc99fc3.cn-wulanchabu.alicontainer.com'  # noqa: E501
+                url = f"https://pai.console.aliyun.com/?regionId=cn-wulanchabu&workspaceId={self.aliyun_cfg['workspace_id']}#/dlc/jobs/{job_id}"  # noqa: E501
                 logger = get_logger()
-                logger.debug('')
-                logger.debug('*' * 168)
-                logger.debug(
-                    f'{url}/index?workspaceId={self.aliyun_cfg["workspace_id"]}#/dlc2/job/{job_id}/detail'  # noqa: E501
-                )
-                logger.debug('*' * 168)
+                logger.debug('\n' + '*' * 168 + '\n' + url + '\n' + '*' * 168)
 
                 while True:
                     # 1. Avoid to request dlc too frequently.
                     # 2. DLC job may not be ready immediately after creation.
-                    for _ in range(20):
+                    num_retry = 60
+                    for retry_index in range(num_retry):
                         time.sleep(2)
                         try:
                             job_info = json.loads(
                                 subprocess.getoutput(f'dlc get job {job_id}'))
                             break
                         except:  # noqa: E722
-                            pass
+                            if retry_index > num_retry // 3:
+                                logger.warning(
+                                    f'Failed to get job info for {job_id}, '
+                                    'retrying...')
                     else:
                         raise RuntimeError(
                             f'Failed to get job info for {job_id}')
@@ -264,7 +269,7 @@ class DLCRunner(BaseRunner):
                     cur_time = (pod_create_time +
                                 elasped_time).strftime('%Y-%m-%dT%H:%M:%SZ')
                     logs_cmd = ('dlc logs'
-                                f' {job_id} {job_id}-worker-0'
+                                f' {job_id} {job_id}-master-0'
                                 f" -c {self.aliyun_cfg['dlc_config_path']}"
                                 f' --start_time {pri_time}'
                                 f' --end_time {cur_time}')

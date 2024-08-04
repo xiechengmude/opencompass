@@ -50,6 +50,11 @@ class OpenAI(BaseAPIModel):
         temperature (float, optional): What sampling temperature to use.
             If not None, will override the temperature in the `generate()`
             call. Defaults to None.
+        tokenizer_path (str, optional): The path to the tokenizer. Use path if
+            'tokenizer_path' is None, otherwise use the 'tokenizer_path'.
+            Defaults to None.
+        extra_body (Dict, optional): Add additional JSON properties to
+            the request
     """
 
     is_api: bool = True
@@ -67,7 +72,9 @@ class OpenAI(BaseAPIModel):
                  mode: str = 'none',
                  logprobs: Optional[bool] = False,
                  top_logprobs: Optional[int] = None,
-                 temperature: Optional[float] = None):
+                 temperature: Optional[float] = None,
+                 tokenizer_path: Optional[str] = None,
+                 extra_body: Optional[Dict] = None):
 
         super().__init__(path=path,
                          max_seq_len=max_seq_len,
@@ -82,6 +89,9 @@ class OpenAI(BaseAPIModel):
         self.mode = mode
         self.logprobs = logprobs
         self.top_logprobs = top_logprobs
+        self.tokenizer_path = tokenizer_path
+        self.hf_tokenizer = None
+        self.extra_body = extra_body
 
         if isinstance(key, str):
             if key == 'ENV':
@@ -184,8 +194,12 @@ class OpenAI(BaseAPIModel):
                 messages.append(msg)
 
         # Hold out 100 tokens due to potential errors in tiktoken calculation
-        max_out_len = min(
-            max_out_len, context_window - self.get_token_len(str(input)) - 100)
+        try:
+            max_out_len = min(
+                max_out_len,
+                context_window - self.get_token_len(str(input)) - 100)
+        except KeyError:
+            max_out_len = max_out_len
         if max_out_len <= 0:
             return ''
 
@@ -232,7 +246,14 @@ class OpenAI(BaseAPIModel):
                     stop=None,
                     temperature=temperature,
                 )
-                raw_response = requests.post(self.url,
+                if self.extra_body:
+                    data.update(self.extra_body)
+                if isinstance(self.url, list):
+                    import random
+                    url = self.url[random.randint(0, len(self.url) - 1)]
+                else:
+                    url = self.url
+                raw_response = requests.post(url,
                                              headers=header,
                                              data=json.dumps(data))
             except requests.ConnectionError:
@@ -263,6 +284,9 @@ class OpenAI(BaseAPIModel):
                     elif response['error']['code'] == 'invalid_prompt':
                         self.logger.warn('Invalid prompt:', str(input))
                         return ''
+                    elif response['error']['type'] == 'invalid_prompt':
+                        self.logger.warn('Invalid prompt:', str(input))
+                        return ''
 
                     self.logger.error('Find error message in response: ',
                                       str(response['error']))
@@ -283,8 +307,19 @@ class OpenAI(BaseAPIModel):
         Returns:
             int: Length of the input tokens
         """
-        enc = self.tiktoken.encoding_for_model(self.path)
-        return len(enc.encode(prompt))
+        if self.tokenizer_path:
+            try:
+                enc = self.tiktoken.encoding_for_model(self.tokenizer_path)
+                return len(enc.encode(prompt))
+            except Exception:
+                from transformers import AutoTokenizer
+                if self.hf_tokenizer is None:
+                    self.hf_tokenizer = AutoTokenizer.from_pretrained(
+                        self.tokenizer_path)
+                return len(self.hf_tokenizer(prompt).input_ids)
+        else:
+            enc = self.tiktoken.encoding_for_model(self.path)
+            return len(enc.encode(prompt))
 
     def bin_trim(self, prompt: str, num_token: int) -> str:
         """Get a suffix of prompt which is no longer than num_token tokens.
@@ -331,65 +366,48 @@ class OpenAI(BaseAPIModel):
         return prompt
 
 
-class OpenAIAllesAPIN(OpenAI):
-    """Model wrapper around OpenAI-AllesAPIN.
-
-    Args:
-        path (str): The name of OpenAI's model.
-        url (str): URL to AllesAPIN.
-        key (str): AllesAPIN key.
-        query_per_second (int): The maximum queries allowed per second
-            between two consecutive calls of the API. Defaults to 1.
-        max_seq_len (int): Unused here.
-        meta_template (Dict, optional): The model's meta prompt
-            template if needed, in case the requirement of injecting or
-            wrapping of any meta instructions.
-        retry (int): Number of retires if the API call fails. Defaults to 2.
-    """
-
-    is_api: bool = True
+class OpenAISDK(OpenAI):
 
     def __init__(self,
-                 path: str,
-                 url: str,
-                 key: str,
-                 temperature: float = 1.0,
+                 path: str = 'gpt-3.5-turbo',
+                 max_seq_len: int = 4096,
                  query_per_second: int = 1,
                  rpm_verbose: bool = False,
-                 max_seq_len: int = 2048,
-                 meta_template: Optional[Dict] = None,
-                 retry: int = 2):
-        super().__init__(path=path,
-                         max_seq_len=max_seq_len,
-                         query_per_second=query_per_second,
-                         rpm_verbose=rpm_verbose,
-                         meta_template=meta_template,
-                         retry=retry)
-        self.url = url
-        self.temperature = temperature
-        self.headers = {
-            'alles-apin-token': key,
-            'content-type': 'application/json',
-        }
+                 retry: int = 2,
+                 key: str | List[str] = 'ENV',
+                 org: str | List[str] | None = None,
+                 meta_template: Dict | None = None,
+                 openai_api_base: str = OPENAI_API_BASE,
+                 mode: str = 'none',
+                 logprobs: bool | None = False,
+                 top_logprobs: int | None = None,
+                 temperature: float | None = None,
+                 tokenizer_path: str | None = None,
+                 extra_body: Dict | None = None):
+        super().__init__(path, max_seq_len, query_per_second, rpm_verbose,
+                         retry, key, org, meta_template, openai_api_base, mode,
+                         logprobs, top_logprobs, temperature, tokenizer_path,
+                         extra_body)
+        from openai import OpenAI
+        self.opeanai_cleint = OpenAI(base_url=openai_api_base, api_key=key)
 
-    def _generate(self, input: PromptType, max_out_len: int,
+    def _generate(self, input: PromptList | str, max_out_len: int,
                   temperature: float) -> str:
-        """Generate results given an input.
-
-        Args:
-            inputs (PromptType): A string or PromptDict.
-                The PromptDict should be organized in OpenCompass'
-                API format.
-            max_out_len (int): The maximum length of the output.
-            temperature (float): What sampling temperature to use,
-                between 0 and 2. Higher values like 0.8 will make the output
-                more random, while lower values like 0.2 will make it more
-                focused and deterministic.
-
-        Returns:
-            str: The generated string.
-        """
         assert isinstance(input, (str, PromptList))
+
+        # max num token for gpt-3.5-turbo is 4097
+        context_window = 4096
+        if '32k' in self.path:
+            context_window = 32768
+        elif '16k' in self.path:
+            context_window = 16384
+        elif 'gpt-4' in self.path:
+            context_window = 8192
+
+        # will leave 100 tokens as prompt buffer, triggered if input is str
+        if isinstance(input, str) and self.mode != 'none':
+            context_window = self.max_seq_len
+            input = self.bin_trim(input, context_window - 100 - max_out_len)
 
         if isinstance(input, str):
             messages = [{'role': 'user', 'content': input}]
@@ -405,64 +423,29 @@ class OpenAIAllesAPIN(OpenAI):
                     msg['role'] = 'system'
                 messages.append(msg)
 
-            # model can be response with user and system
-            # when it comes with agent involved.
-            assert msg['role'] in ['user', 'system']
+        # Hold out 100 tokens due to potential errors in tiktoken calculation
+        try:
+            max_out_len = min(
+                max_out_len,
+                context_window - self.get_token_len(str(input)) - 100)
+        except KeyError:
+            max_out_len = max_out_len
+        if max_out_len <= 0:
+            return ''
 
-        data = {
-            'model': self.path,
-            'messages': messages,
-            'temperature': temperature
-        }
-        for _ in range(self.retry):
+        num_retries = 0
+        while num_retries < self.retry:
             self.wait()
             try:
-                raw_response = requests.post(self.url,
-                                             headers=self.headers,
-                                             data=json.dumps(data))
-            except requests.ConnectionError:
-                self.logger.error('Request error, got',
-                                  str(raw_response.content))
-                time.sleep(1)
-                continue
-            try:
-                response = raw_response.json()
-            except requests.JSONDecodeError:
-                self.logger.error('JsonDecode error, got',
-                                  str(raw_response.content))
-                time.sleep(1)
-                continue
-            if raw_response.status_code == 200 and response[
-                    'msgCode'] == '10000':
-                data = response['data']
-                choices = data['choices']
-                if choices is None:
-                    self.logger.error(data)
-                else:
-                    return choices[0]['message']['content'].strip()
-            try:
-                match = re.match(r'Error code: \d+ - (.*)', response['data'])
-                err = eval(match.group(1))['error']
-                if err['code'] == 'content_filter' and err['status'] == 400:
-                    return err['message']
-            except Exception:
-                pass
-            self.logger.error(response['msg'])
-            self.logger.error(response)
-            time.sleep(1)
-
-        raise RuntimeError('API call failed.')
-
-    def get_token_len(self, prompt: str) -> int:
-        """Get lengths of the tokenized string. Only English and Chinese
-        characters are counted for now. Users are encouraged to override this
-        method if more accurate length is needed.
-
-        Args:
-            prompt (str): Input string.
-
-        Returns:
-            int: Length of the input tokens
-        """
-        enc = self.tiktoken.encoding_for_model(self.path)
-        return len(enc.encode(prompt))
+                responses = self.opeanai_cleint.chat.completions.create(
+                    model=self.path,
+                    max_tokens=max_out_len,
+                    n=1,
+                    temperature=self.temperature,
+                    messages=messages)
+                return responses.choices[0].message.content
+            except Exception as e:
+                self.logger.error(e)
+            num_retries += 1
+        raise RuntimeError('Calling OpenAI API failed after retrying for '
+                           f'{self.retry} times. Check the logs for details.')
